@@ -1,0 +1,166 @@
+---
+title: "Exploration of Phylogenetic Relationships Between Obscure Snake Families"
+author: "Nikki Smith"
+date: "2024-10-22"
+output: pdf_document
+---
+
+## Introduction
+
+Serpentes is the suborder in Squamata (Lizards) that contains all snakes. Due to their unique morphology, they are an interesting group to study in evolutionary biology. Blind snakes are even more intriguing because of their limited fossil record, strange features and, most importantly, lack of consensus for the branching order of their families (Facini, 2020). Because of these factors, the placement of blind snakes in relation to other snake groups remains an open area of research in phylogenetics.
+
+Previous research has not come to a consensus on the placement of three blind snake families, Anomalepididae (Primitive Blind Snake), Leptotyphlopidae (Threadsnake), Typhlopidae (Typhloids). However, there are some explored possibilities. Depending on the tree used, primative blind snakes are a sister group to all nonblind snakes or a sister group to threadsnakes and typhloids (Singhal, 2021). I wish to explore these relationships further by comparing family placements in a Maximum Likelihood versus a Neighbor-Joining tree as well as how their diets differ. Therefore, I hypothesize that both of the trees will be similar and there will not be a difference in diet between the blind snake families.
+
+```{r Setup, echo= TRUE,results='hide', message=FALSE, warning=FALSE, tidy.opts=list(width.cutoff=60), tidy=TRUE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, results = "hide", message = FALSE, error = FALSE, warning = FALSE)
+opts_chunk$set(tidy.opts=list(width.cutoff=60), tidy=TRUE)
+# Packages used
+library(tidyverse)
+library(stringi)
+library(ape)
+library(RSQLite)
+library(Biostrings)
+library(muscle)
+library(DECIPHER)
+library(viridis)
+
+library(rentrez)
+library(ggtree)
+library(ggplot2)
+library(dendextend)
+library(styler)
+
+# Squamatabase is the trait database. It was downloaded from Github:
+# https://github.com/blueraleigh/squamatabase
+# See the accompanying paper too!
+# Quite simply, it is a database containing diet samples from the worlds' snakes.
+# Each record describes an event of a snake eating or attempting to eat a prey item. 
+# It contains various columns with information on the predator and prey, but the relevant ones are "predator_taxon" and "prey". I used this database to match the family to each sequence in 
+# sequencedf and also to compare what each relevant snake family eats.
+# It is very important to have a personal access token for github or else this will not install.
+# devtools::install_github("blueraleigh/squamatabase")
+library(squamatabase)
+```
+
+```{r Data prep, echo= TRUE,results='hide', message=FALSE, warning=FALSE, tidy.opts=list(width.cutoff=60), tidy=TRUE}
+dfDiet <- data(diet)
+# Filter out any non-relavant snakes and make a new "family" column
+dfFiltered <- squamatabase::filter_records(diet, predator_taxon = "Anomalepididae|Leptotyphlopidae|Typhlopidae")
+dfFiltered <- dfFiltered %>%
+  mutate(family = sapply(str_split(predator_taxon, ";"), function(x) x[3]))
+
+# Any values in dfFiltered$family containing "rena" are actually "Leptotyphlopidae"
+dfFiltered$family[dfFiltered$family == "Rena"] <- "Leptotyphlopidae"
+
+# Sequences were picked based on 16S ribosomal gene. This is because of the lack of sequence data for Liotyphlops beu, our representitive species for Anomalepididae. This species was chosen since it was the only member of Anomalepididae contained within squamatabase.
+fastaFile <- readDNAStringSet(".../rscript/data/serpentes_sequences.fasta")
+seq_header <- names(fastaFile)
+sequence <- paste(fastaFile)
+sequencedf <- data.frame(seq_header, sequence)
+# I extracted the organism name here and made it it's own column. Then I converted the sequences to a DNAStringSet type to prepare them for alignment
+sequencedf <- sequencedf %>%
+  mutate(name = sapply(str_split(seq_header, " "), function(x) {
+    paste(x[2], x[3], sep = " ")
+  }))
+sequencedf$sequenceStringSet <- DNAStringSet(sequencedf$sequence)
+
+# BrowseSeqs(sequencedf$sequenceStringSet)
+
+# Here we are adding the family names to each sequence in sequencedf using data from dfFiltered.
+sequencedf <- sequencedf %>%
+  mutate(family = sapply(name, function(x) {
+    matched_row <- dfFiltered %>%
+      filter(str_detect(predator_taxon, x)) %>%
+      pull(family)
+    if (length(matched_row) > 0) {
+      return(matched_row[1])
+    } else {
+      return(NA)
+    }
+  }))
+# Here, I'm removing any NA, duplicates and making a new column containing the individual's species name as well as their family for easy viewing once we get to the phylogeny tree.
+sequencedf <- sequencedf[!is.na(sequencedf$family), ]
+uniqueSequencesdf <- sequencedf[!duplicated(sequencedf$name), ]
+uniqueSequencesdf$family <- paste0("(", uniqueSequencesdf$family, ")")
+uniqueSequencesdf$nameandfamily <- paste(uniqueSequencesdf$name, uniqueSequencesdf$family, sep = " ")
+names(uniqueSequencesdf$sequenceStringSet) <- uniqueSequencesdf$nameandfamily
+
+# This unfortunately ends up being a very small dataset with only 8 unique snake species.This reflects the lack of studies in these snakes.
+```
+
+```{r Alignment, echo=TRUE,results='hide',fig.keep='all', fig.cap= "Maximum Likelihood Tree. Note how primitive blind snakes are a sister group to threadsnakes.", tidy.opts=list(width.cutoff=60), tidy=TRUE}
+serpentes.alignment <- DNAStringSet(muscle::muscle(uniqueSequencesdf$sequenceStringSet, maxiters = 2), use.names = TRUE)
+# BrowseSeqs(serpentes.alignment)
+# These are all chosen from lecture slides
+chosen.model <- "TN93"
+clustering.threshold <- 0.03
+clustering.method <- "single"
+
+dnaBin.16S <- as.DNAbin(serpentes.alignment)
+distanceMatrix <- dist.dna(dnaBin.16S, model = chosen.model, as.matrix = TRUE, pairwise.deletion = TRUE)
+
+# This tree takes about 15 minutes to run on my laptop. GTR stands for general time reversal model.
+ml.16S <- DECIPHER::TreeLine(serpentes.alignment, method = "ML", model = "GTR")
+
+plot(ml.16S)
+
+```
+
+```{r fig.cap = "Neighbour Joining Tree. Note that primitive blind snakes are a sister group to typhloids. ", echo=FALSE,results='hide',fig.keep='all', tidy.opts=list(width.cutoff=60), tidy=TRUE}
+nj.16S <- DECIPHER::TreeLine(
+  myDistMatrix = distanceMatrix,
+  method = "NJ",
+  cutoff = clustering.threshold,
+  showPlot = TRUE,
+  verbose = TRUE
+)
+```
+
+```{r fig.cap = "Pylogeny Tree Comparison", echo=TRUE,results='hide',fig.keep='all', tidy.opts=list(width.cutoff=60), tidy=TRUE}
+# Compare the two dendrograms using a tanglegram. This helps us quickly visualize the conflict in taxa placement between the two trees. We can clearly see that theres a difference in where Leptotyphlopidae and Typhlopidae were placed.
+tanglegram(ml.16S, nj.16S,
+  main_left = "ML Dendrogram",
+  main_right = "NJ Dendrogram", common_subtrees_color_branches = TRUE, axes = TRUE, lab.cex = 0.5, type = "r", margin_outer = 3
+)
+```
+
+```{r fig.cap = "Prey eaten by snake family. Note the diverse prey sources of Leptotyphlopidae.", tidy.opts=list(width.cutoff=60), tidy=TRUE}
+# Now let's visualize what kind of prey members of each of the three families eat. Filter each record by prey and family and get a count of the amount of each prey eaten. I further sorted the data to include prey eaten more than once so I have much less data points. If I chose summary_data$Count > 2, then it would completely eliminate every Anomalepididae record, which is not what we want.
+summary_data <- dfFiltered %>%
+  group_by(family, prey) %>%
+  summarize(Count = n())
+summary_data <- summary_data[summary_data$family != "Megatyphlops", ]
+summary_data <- summary_data[summary_data$family != "Leptotyphlops", ]
+summary_data <- summary_data[summary_data$Count > 1, ]
+
+# From the plot we can see that Formicidae (ants) are the most common prey across families. Leptotyphlopidae has the most diverse diet among the three groups, while Anomalepididae is the least diverse. There does not appear to be a correlation between diet and phylogenetic placement.
+ggplot(summary_data, aes(x = family, y = Count, fill = prey)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Frequency of Prey Items by Family",
+    x = "Predator Family",
+    y = "Frequency", fill = "Prey Name"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Discussion & Conclusion
+
+Based on Figure 1 and Figure 2, we can see a distinct difference in the placement of primitive blind snakes. In the ML tree, primitive blind snakes are a sister group only to threadsnakes, while in the NJ tree, primitive blind snakes are a sister group only to typhloids. This is a contrast to what was found in previous literature, where the ML tree found that primitive blind snakes were a sister group to all non-blind snakes (Singhal, 2021). I also found that threadsnakes had a more diverse diet than the other two families, but otherwise, diet differences did not reflect in their phylogenetic placements. Therefore, I reject my original hypothesis.
+
+There were several limitations to my analysis. The most striking one is the very small sequence sample size (n = 8). This makes it more difficult to make a descriptive tree. It also represents bias in the NCBI database, since it likely contains more records for snakes with medical-significance (i.e venomous snakes). Also, since Liotyphlops beu was the only primitive blind snake in squamatabase, it narrowed down the genes I could use for alignment. This species only had two nucleotide sequences available, so I had to use 16S ribosomal RNA gene. Another limitation is the lack of diet records in squamatabase. For primitive blind snakes in particular, there were only 3 records out of a total of 11049 observations. This makes diet analysis a lot harder to do. Future studies would benefit from having a more robust array of species and sequences. Also, the use of neural networks could be promising in the future, similar to what was done by Burbrink et al. (2020).
+
+## Acknowledgements
+
+Code credits:
+
+<https://carpentries.github.io/sandpaper-docs/github-pat.html> <https://stackoverflow.com/questions/21263636/read-fasta-into-a-dataframe-and-extract-subsequences-of-fasta-file> <https://stackoverflow.com/questions/5559467/how-to-merge-two-columns-in-r-with-a-specific-symbol> <https://stackoverflow.com/questions/64160683/how-to-add-parentheses-to-column-values-in-a-data-frame-in-r>
+
+## References
+
+1.  Fachini, T. S., Onary, S., Palci, A., Lee, M. S. Y., Bronzati, M., & Hsiou, A. S. (2020). Cretaceous Blind Snake from Brazil Fills Major Gap in Snake Evolution. iScience, 23(12), 101834. <https://doi.org/10.1016/j.isci.2020.101834>
+2.  Singhal, S., Colston, T. J., Grundler, M. R., et al. (2021), Congruence and Conflict in the Higher-Level Phylogenetics of Squamate Reptiles: An Expanded Phylogenomic Perspective, Systematic Biology, Volume 70, Issue 3, May 2021, Pages 542–557, <https://doi.org/10.1093/sysbio/syaa054>
+3.  Grundler MC (2020) SquamataBase: a natural history database and R package for comparative biology of snake feeding habits. Biodiversity Data Journal 8: e49943. <https://doi.org/10.3897/BDJ.8.e49943>
+4.  Burbrink, F.T., Grazziotin, F. G., Pyron, R A., et al. (2020), Interrogating Genomic-Scale Data for Squamata (Lizards, Snakes, and Amphisbaenians) Shows no Support for Key Traditional Morphological Relationships, Systematic Biology, Volume 69, Issue 3, May 2020, Pages 502–520, <https://doi.org/10.1093/sysbio/syz062>
